@@ -93,6 +93,30 @@
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
         }
 
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .success-message {
+            background: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
         .board {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -125,16 +149,11 @@
             padding: 15px;
             margin-bottom: 15px;
             transition: transform 0.2s, box-shadow 0.2s;
-            cursor: move;
         }
 
         .order-card:hover {
             transform: translateY(-3px);
             box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-
-        .order-card.dragging {
-            opacity: 0.5;
         }
 
         .order-header {
@@ -226,6 +245,8 @@
         
         <div class="add-order-section">
             <h2>Add New Order</h2>
+            <div id="successMessage" class="success-message">Order added successfully! ✓</div>
+            <div id="errorMessage" class="error-message"></div>
             <form id="orderForm">
                 <div class="form-group">
                     <label for="customerName">Customer Name *</label>
@@ -239,36 +260,66 @@
                     <label for="notes">Notes (Optional)</label>
                     <textarea id="notes" placeholder="Special instructions, allergies, etc."></textarea>
                 </div>
-                <button type="submit" class="btn">Add Order</button>
+                <button type="submit" class="btn" id="submitBtn">Add Order</button>
             </form>
         </div>
 
         <div class="board">
             <div class="column new">
                 <h2>📋 New</h2>
-                <div id="newOrders" class="order-list"></div>
+                <div id="newOrders" class="order-list">
+                    <div class="empty-state">Loading...</div>
+                </div>
             </div>
             
             <div class="column preparing">
                 <h2>👨‍🍳 Preparing</h2>
-                <div id="preparingOrders" class="order-list"></div>
+                <div id="preparingOrders" class="order-list">
+                    <div class="empty-state">Loading...</div>
+                </div>
             </div>
             
             <div class="column ready">
                 <h2>✅ Ready</h2>
-                <div id="readyOrders" class="order-list"></div>
+                <div id="readyOrders" class="order-list">
+                    <div class="empty-state">Loading...</div>
+                </div>
             </div>
             
             <div class="column collected">
                 <h2>🎉 Collected</h2>
-                <div id="collectedOrders" class="order-list"></div>
+                <div id="collectedOrders" class="order-list">
+                    <div class="empty-state">Loading...</div>
+                </div>
             </div>
         </div>
     </div>
 
-    <script>
-        let orders = [];
-        let draggedElement = null;
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getFirestore, collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, query, orderBy } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        // Firebase configuration
+        const firebaseConfig = {
+  apiKey: "AIzaSyDLbIfUdC1snbxtXndML4diQIJ_wn2tjsc",
+  authDomain: "orders-e25e8.firebaseapp.com",
+  projectId: "orders-e25e8",
+  storageBucket: "orders-e25e8.firebasestorage.app",
+  messagingSenderId: "986449881448",
+  appId: "1:986449881448:web:042e3aeb96b4262ee20edd"
+};
+
+        // Initialize Firebase
+        let app, db;
+        
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            console.log('Firestore initialized successfully');
+        } catch (error) {
+            console.error('Firebase initialization error:', error);
+            showError('Failed to connect to database');
+        }
 
         const statuses = ['new', 'preparing', 'ready', 'collected'];
         const nextStatus = {
@@ -285,142 +336,212 @@
             'collected': null
         };
 
-        function formatTime(date) {
+        function showSuccess(message) {
+            const successMsg = document.getElementById('successMessage');
+            successMsg.textContent = message;
+            successMsg.style.display = 'block';
+            setTimeout(() => {
+                successMsg.style.display = 'none';
+            }, 3000);
+        }
+
+        function showError(message) {
+            const errorMsg = document.getElementById('errorMessage');
+            errorMsg.textContent = message;
+            errorMsg.style.display = 'block';
+            setTimeout(() => {
+                errorMsg.style.display = 'none';
+            }, 5000);
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
             return date.toLocaleTimeString('en-US', { 
                 hour: '2-digit', 
                 minute: '2-digit'
             });
         }
 
-        function createOrderCard(order) {
+        function createOrderCard(orderId, order) {
             const card = document.createElement('div');
             card.className = 'order-card';
-            card.draggable = true;
-            card.dataset.orderId = order.id;
+            card.dataset.orderId = orderId;
+
+            const notesHTML = order.notes ? `<div class="notes">📝 ${escapeHtml(order.notes)}</div>` : '';
+            const nextButtonHTML = order.status !== 'collected' ? 
+                `<button class="btn-small btn-next" data-order-id="${orderId}">
+                    ${statusLabels[order.status]}
+                </button>` : '';
 
             card.innerHTML = `
                 <div class="order-header">
-                    <span class="customer-name">${order.customerName}</span>
+                    <span class="customer-name">${escapeHtml(order.customerName)}</span>
                     <span class="timestamp">${formatTime(order.timestamp)}</span>
                 </div>
-                <div class="item-summary">${order.itemSummary}</div>
-                ${order.notes ? `<div class="notes">📝 ${order.notes}</div>` : ''}
+                <div class="item-summary">${escapeHtml(order.itemSummary)}</div>
+                ${notesHTML}
                 <div class="order-actions">
-                    ${order.status !== 'collected' ? `
-                        <button class="btn-small btn-next" onclick="moveOrder('${order.id}')">
-                            ${statusLabels[order.status]}
-                        </button>
-                    ` : ''}
-                    <button class="btn-small btn-delete" onclick="deleteOrder('${order.id}')">Delete</button>
+                    ${nextButtonHTML}
+                    <button class="btn-small btn-delete" data-order-id="${orderId}">Delete</button>
                 </div>
             `;
 
-            // Drag events
-            card.addEventListener('dragstart', handleDragStart);
-            card.addEventListener('dragend', handleDragEnd);
+            // Add event listeners
+            const nextBtn = card.querySelector('.btn-next');
+            if (nextBtn) {
+                nextBtn.addEventListener('click', () => moveOrder(orderId, order.status));
+            }
+
+            const deleteBtn = card.querySelector('.btn-delete');
+            deleteBtn.addEventListener('click', () => deleteOrder(orderId));
 
             return card;
         }
 
-        function handleDragStart(e) {
-            draggedElement = this;
-            this.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/html', this.innerHTML);
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
-        function handleDragEnd(e) {
-            this.classList.remove('dragging');
-        }
-
-        function renderOrders() {
+        function renderOrders(orders) {
+            console.log('renderOrders called with:', orders);
+            
             statuses.forEach(status => {
                 const container = document.getElementById(`${status}Orders`);
+                if (!container) {
+                    console.error(`Container not found for status: ${status}`);
+                    return;
+                }
+                
                 container.innerHTML = '';
                 
-                const statusOrders = orders.filter(o => o.status === status);
+                const statusOrders = orders
+                    .filter(order => {
+                        console.log(`Checking order ${order.id}:`, order.data);
+                        return order.data && order.data.status === status;
+                    })
+                    .sort((a, b) => (a.data.timestamp || 0) - (b.data.timestamp || 0));
+                
+                console.log(`Status ${status}: ${statusOrders.length} orders`);
                 
                 if (statusOrders.length === 0) {
                     container.innerHTML = '<div class="empty-state">No orders</div>';
                 } else {
                     statusOrders.forEach(order => {
-                        container.appendChild(createOrderCard(order));
+                        try {
+                            container.appendChild(createOrderCard(order.id, order.data));
+                        } catch (error) {
+                            console.error('Error creating order card:', error, order);
+                        }
                     });
                 }
             });
-
-            setupDropZones();
         }
 
-        function setupDropZones() {
-            document.querySelectorAll('.order-list').forEach(list => {
-                list.addEventListener('dragover', handleDragOver);
-                list.addEventListener('drop', handleDrop);
-            });
-        }
-
-        function handleDragOver(e) {
-            if (e.preventDefault) {
-                e.preventDefault();
-            }
-            e.dataTransfer.dropEffect = 'move';
-            return false;
-        }
-
-        function handleDrop(e) {
-            if (e.stopPropagation) {
-                e.stopPropagation();
-            }
-
-            const orderId = draggedElement.dataset.orderId;
-            const newStatus = this.id.replace('Orders', '');
-            
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                order.status = newStatus;
-                renderOrders();
-            }
-
-            return false;
-        }
-
-        function addOrder(e) {
+        async function addOrder(e) {
             e.preventDefault();
             
-            const order = {
-                id: Date.now().toString(),
-                customerName: document.getElementById('customerName').value,
-                itemSummary: document.getElementById('itemSummary').value,
-                notes: document.getElementById('notes').value,
-                status: 'new',
-                timestamp: new Date()
-            };
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Adding...';
 
-            orders.push(order);
-            renderOrders();
-            
-            document.getElementById('orderForm').reset();
-        }
+            try {
+                const customerName = document.getElementById('customerName').value.trim();
+                const itemSummary = document.getElementById('itemSummary').value.trim();
+                const notes = document.getElementById('notes').value.trim();
 
-        function moveOrder(orderId) {
-            const order = orders.find(o => o.id === orderId);
-            if (order && nextStatus[order.status]) {
-                order.status = nextStatus[order.status];
-                renderOrders();
+                if (!customerName || !itemSummary) {
+                    showError('Please fill in all required fields');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Add Order';
+                    return;
+                }
+
+                const order = {
+                    customerName: customerName,
+                    itemSummary: itemSummary,
+                    notes: notes,
+                    status: 'new',
+                    timestamp: Date.now()
+                };
+
+                console.log('Adding order to Firestore:', order);
+                
+                await addDoc(collection(db, 'orders'), order);
+                
+                console.log('Order added successfully to Firestore');
+                document.getElementById('orderForm').reset();
+                showSuccess('Order added successfully! ✓');
+                
+            } catch (error) {
+                console.error('Error adding order:', error);
+                console.error('Error code:', error.code);
+                
+                if (error.code === 'permission-denied') {
+                    showError('PERMISSION DENIED: Please update Firestore Rules in Firebase Console');
+                } else {
+                    showError('Error: ' + error.message);
+                }
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Add Order';
             }
         }
 
-        function deleteOrder(orderId) {
+        async function moveOrder(orderId, currentStatus) {
+            const newStatusValue = nextStatus[currentStatus];
+            if (newStatusValue) {
+                try {
+                    await updateDoc(doc(db, 'orders', orderId), {
+                        status: newStatusValue
+                    });
+                    console.log(`Order ${orderId} moved to ${newStatusValue}`);
+                } catch (error) {
+                    console.error('Error updating order:', error);
+                    showError('Failed to update order: ' + error.message);
+                }
+            }
+        }
+
+        async function deleteOrder(orderId) {
             if (confirm('Are you sure you want to delete this order?')) {
-                orders = orders.filter(o => o.id !== orderId);
-                renderOrders();
+                try {
+                    await deleteDoc(doc(db, 'orders', orderId));
+                    console.log(`Order ${orderId} deleted`);
+                    showSuccess('Order deleted successfully');
+                } catch (error) {
+                    console.error('Error deleting order:', error);
+                    showError('Failed to delete order: ' + error.message);
+                }
             }
         }
 
+        // Listen for real-time updates
+        onSnapshot(collection(db, 'orders'), (snapshot) => {
+            const orders = [];
+            snapshot.forEach((docSnap) => {
+                orders.push({
+                    id: docSnap.id,
+                    data: docSnap.data()
+                });
+            });
+            console.log('Orders updated:', orders.length, 'orders');
+            console.log('Orders data:', orders);
+            renderOrders(orders);
+        }, (error) => {
+            console.error('Error loading orders:', error);
+            if (error.code === 'permission-denied') {
+                showError('Permission denied. Please check Firestore rules.');
+            } else {
+                showError('Failed to load orders: ' + error.message);
+            }
+        });
+
+        // Form submission
         document.getElementById('orderForm').addEventListener('submit', addOrder);
-        
-        // Initial render
-        renderOrders();
+
+        console.log('App initialized with Firestore');
     </script>
 </body>
 </html>
